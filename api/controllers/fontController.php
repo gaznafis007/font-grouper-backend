@@ -1,109 +1,108 @@
 <?php
-// api/controllers/FontController.php
-namespace Controllers;
+// index.php (in root folder)
 
-use Models\Font;
-use Services\FileUploadService;
+// Set error reporting
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
 
-class FontController {
-    private $fontModel;
-    private $fileUploadService;
+// Enable CORS
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
+
+// Load configuration
+require_once 'api/config/Config.php';
+Config::init();
+
+// Include required files
+require_once 'api/controllers/FontController.php';
+require_once 'api/controllers/FontGroupController.php';
+
+// Parse URL
+$uri = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
+$uri = str_replace('/font-grouper-backend/', '', $uri); // Remove project folder from URI
+$uri = explode('/', trim($uri, '/'));
+
+// Route definitions
+$routes = [
+    // Font endpoints
+    'POST api/fonts' => ['FontController', 'upload'],
+    'GET api/fonts' => ['FontController', 'getAll'],
+    'GET api/fonts/{id}' => ['FontController', 'getById'],
+    'DELETE api/fonts/{id}' => ['FontController', 'delete'],
     
-    public function __construct() {
-        $this->fontModel = new Font();
-        $this->fileUploadService = new FileUploadService();
+    // Font Group endpoints
+    'POST api/font-groups' => ['FontGroupController', 'create'],
+    'GET api/font-groups' => ['FontGroupController', 'getAll'],
+    'GET api/font-groups/{id}' => ['FontGroupController', 'getById'],
+    'PUT api/font-groups/{id}' => ['FontGroupController', 'update'],
+    'DELETE api/font-groups/{id}' => ['FontGroupController', 'delete']
+];
+
+// Find matching route
+$method = $_SERVER['REQUEST_METHOD'];
+$routeKey = null;
+$params = [];
+
+$currentPath = implode('/', $uri);
+
+foreach ($routes as $route => $handler) {
+    $routeParts = explode(' ', $route);
+    $routeMethod = $routeParts[0];
+    $routePath = $routeParts[1];
+    
+    if ($routeMethod !== $method) {
+        continue;
     }
     
-    public function upload() {
-        // Check if file was uploaded
-        if (!isset($_FILES['fontFile']) || $_FILES['fontFile']['error'] == UPLOAD_ERR_NO_FILE) {
-            $this->sendResponse(400, ['success' => false, 'message' => 'No file uploaded']);
-            return;
+    // Convert route path to regex pattern
+    $pattern = preg_replace('/{[^}]+}/', '([^/]+)', $routePath);
+    $pattern = str_replace('/', '\/', $pattern);
+    $pattern = '/^' . $pattern . '$/';
+    
+    if (preg_match($pattern, $currentPath, $matches)) {
+        $routeKey = $route;
+        
+        // Extract parameters
+        $routePathParts = explode('/', $routePath);
+        $currentPathParts = explode('/', $currentPath);
+        
+        for ($i = 0; $i < count($routePathParts); $i++) {
+            if (isset($currentPathParts[$i]) && preg_match('/{([^}]+)}/', $routePathParts[$i], $paramMatches)) {
+                $params[$paramMatches[1]] = $currentPathParts[$i];
+            }
         }
         
-        // Upload file
-        $uploadResult = $this->fileUploadService->uploadFile($_FILES['fontFile']);
-        
-        if (!$uploadResult['success']) {
-            $this->sendResponse(400, $uploadResult);
-            return;
-        }
-        
-        // Extract font name (could use a library to read font metadata)
-        $fontName = pathinfo($_FILES['fontFile']['name'], PATHINFO_FILENAME);
-        
-        // Save to database
-        $font = $this->fontModel->create(
-            $fontName,
-            $uploadResult['file_path'],
-            $uploadResult['original_name']
-        );
-        
-        // Add URL for preview
-        $font['preview_url'] = '/fonts/' . $font['file_path'];
-        
-        $this->sendResponse(201, [
-            'success' => true,
-            'message' => 'Font uploaded successfully',
-            'font' => $font
-        ]);
+        break;
     }
+}
+
+// Handle route
+if ($routeKey) {
+    $handler = $routes[$routeKey];
+    $controllerClass = $handler[0];
+    $actionMethod = $handler[1];
     
-    public function getAll() {
-        $fonts = $this->fontModel->getAll();
-        
-        // Add preview URL for each font
-        foreach ($fonts as &$font) {
-            $font['preview_url'] = '/fonts/' . $font['file_path'];
-        }
-        
-        $this->sendResponse(200, [
-            'success' => true,
-            'fonts' => $fonts
-        ]);
-    }
+    $controller = new $controllerClass();
     
-    public function getById($id) {
-        $font = $this->fontModel->getById($id);
-        
-        if (!$font) {
-            $this->sendResponse(404, [
-                'success' => false,
-                'message' => 'Font not found'
-            ]);
-            return;
-        }
-        
-        $font['preview_url'] = '/fonts/' . $font['file_path'];
-        
-        $this->sendResponse(200, [
-            'success' => true,
-            'font' => $font
-        ]);
+    // Call controller method
+    if (!empty($params)) {
+        call_user_func_array([$controller, $actionMethod], $params);
+    } else {
+        call_user_func([$controller, $actionMethod]);
     }
-    
-    public function delete($id) {
-        $deleted = $this->fontModel->delete($id);
-        
-        if (!$deleted) {
-            $this->sendResponse(404, [
-                'success' => false,
-                'message' => 'Font not found or could not be deleted'
-            ]);
-            return;
-        }
-        
-        $this->sendResponse(200, [
-            'success' => true,
-            'message' => 'Font deleted successfully'
-        ]);
-    }
-    
-    private function sendResponse($statusCode, $data) {
-        http_response_code($statusCode);
-        header('Content-Type: application/json');
-        echo json_encode($data);
-        exit;
-    }
+} else {
+    // Debug info
+    echo json_encode([
+        'error' => 'Endpoint not found',
+        'method' => $method,
+        'path' => $currentPath,
+        'available_routes' => array_keys($routes)
+    ]);
 }
 ?>
